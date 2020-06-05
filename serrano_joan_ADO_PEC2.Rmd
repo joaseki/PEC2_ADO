@@ -1,0 +1,487 @@
+---
+title: "Prova d'Avaluació Continuada 2. Anàlisi de Dades Òmiques"
+author: "Joan Serrano Quílez"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+lang: es-ES
+output: 
+  pdf_document: 
+    fig_caption: yes
+    fig_height: 3
+    fig_width: 4
+    toc: yes
+    toc_depth: 4
+urlcolor: blue
+editor_options: 
+  chunk_output_type: inline
+header-includes:
+  - \usepackage{float}
+---
+
+
+```{r echo = FALSE, message = FALSE}
+#Preparem els paquets que es vagin podent necessitar
+if(!require(BiocManager)) install.packages("BiocManager")
+if(!require(DESeq2)) BiocManager::install("DESeq2")
+if(!require(DESeq2)) BiocManager::install("apeglm")
+if(!require(genefilter)) BiocManager::install("genefilter")
+if(!require(org.Hs.eg.db)) BiocManager::install("org.Hs.eg.db")
+if(!require(AnnotationDbi)) BiocManager::install("AnnotationDbi")
+if(!require(dplyr)) install.packages("dplyr", dep = TRUE)
+if(!require(ggplot2)) install.packages("ggplot2", dep = TRUE)
+if(!require(pheatmap)) install.packages("pheatmap", dep = TRUE)
+if(!require(DOSE)) BiocManager::install("DOSE")
+if(!require(clusterProfiler)) BiocManager::install("clusterProfiler")
+if(!require(enrichplot)) BiocManager::install("enrichplot")
+if(!require(AnnotationDbi)) BiocManager::install("AnnotationDbi")
+if(!require(org.Hs.eg.db)) BiocManager::install("org.Hs.eg.db")
+if(!require(RColorBrewer)) install.packages("RColorBrewer", dep = TRUE)
+if(!require(apeglm)) BiocManager::install("apeglm")
+if(!require(ReportingTools)) BiocManager::install("ReportingTools")
+if(!require(VennDiagram)) install.packages("VennDiagram", dep = TRUE)
+if(!require(printr)) install.packages("printr", dep = TRUE)
+```
+
+L’arxiu executable d’aquest treball és pot trobar a github a l’adreça web: https://github.com/joaseki/PEC2_ADO
+
+\pagebreak
+
+# 1. Resum
+
+En el present estudi d'expressió gènica mitjançant RNA-Seq s'estudia el comportament de dos tractaments diferents, SFI i ELI front a l'absència de tractament (NIT); amb l'objectiu de comprovar si hi ha diferències entre els diferents grups. Després de triar 10 mostres aleòries de cada grup i dur a terme els anàlisis necessaris es comprova com no hi ha pràcticament separació entre les mostres SFI i NIT, mentre que ELI és diferent a aquestes dues, activant rutes de senyalització limfoide.
+
+
+# 2. Objectius
+
+L'objectiu d'aquest estudi utilitzant dades de RNA-seq és el d'analitzar i identificar possibles efectes d'infiltració en tiroides, bé amb infiltrats locals o amb extensius en limfòcits. Així podem dividir l'objectiu com a doble:
+
+- D'una banda saber si cadascun dels tractaments resulta eficaç pels pacients.
+- Saber si existeixen diferències entre els dos tractaments esmentats.
+
+# 3. Materials i mètodes
+
+## 3.1. Dades i disseny experimental
+
+Les dades emprades han estat proporcionades pel professor i provenen de dades d'expressió obtingudes per **RNA-Seq**. Es troben en un parell d'arxius, **targets.csv** que conté la informació de cada mostra, sobre el seu grup i d'altres característiques. D'altra banda, **counts.csv** que conté els contejos per a cada geni mostra.
+Els arxius originals contenen un total de 292 mostres, però de manera pseudoaleatòria s'extreuen 10 mostres de cada grup, com s'explica a l'apartat següent, per tant se'ns queden un total de 30 mostres distribuïdes de la següent manera:
+
+- 10 mostres de teixits no infiltrats (a partir d'ara, **NIT**)
+- 10 mostres d'infiltrats locals petits (a partir d'ara, **SFI**)
+- 10 mostres d'infiltrats extensius limfoides (a partir d'ara, **ELI**)
+
+Per tant, l'experimetn que tenim davant és del tipus de **comparació de classes**, ja que volem veure com canvia l'expressió dels gens entre els diferents grups, tal com s'ha dit als Objectius. Pel que fa al disseny experimental, tindria només un factor en aquest cas (A) que seria el tipus de tractament, d'*efectes fixes** (ja que només s'estudien aquests), amb 3 nivells (NIT, SFI i ELI). Podríem fàcilment representar aquest disseny experimental amb l'equació:
+$$y_{ij} = \mu + \alpha_{i} + \epsilon_{ij} $$
+On $\mu$ seria la mitjana general per a un gen determinat, $\alpha_{i}$ és l'efecte de cadascun dels tres tipus de tractament $i$, $\epsilon_{ij}$ els errors aleatoris per a cada tractament *i* i rèplica *j*. Per tant, $y_{ij}$ és l'expressió per a un gen determinat en una observació i grup determinat, que per tant, anirà determinat pel grup a què pertany. 
+
+Una vegada hem establert quin hauria de ser el disseny experimental, procedim a assenyalar quin haurien de ser els contrastos d'interès:
+
+- $\alpha_{NIT}$ vs $\alpha_{SFI}$: per a veure si el tractament amb SFI té un efecte sobre no tractats;
+- $\alpha_{NIT}$ vs $\alpha_{ELI}$: per a veure si el tractament amb ELI té un efecte sobre els no tractats i, per últim;
+- $\alpha_{SFI}$ vs $\alpha_{ELI}$: per a comprovar si ambdós tractaments mostren diferències entre sí.
+
+
+## 3.2. Mètodes i eines emprades
+
+### 3.2.1. Procediment general d'anàlisi
+El *work-flow* que s'ha fet servir és molt semblant al trobat a l'enunciat de la PAC:
+
+ - 1. Obtenció pseudoaleatòria de les dades
+ - 2. Preprocesament de les dades: filtratge i normalització
+ - 3. Identificació de gens diferencialment expressats
+ - 4. Anotació de resultats
+ - 5. Agrupació entre mostres
+ - 6. Anàlisi de significació biològica
+ 
+### 3.2.2. Software emprat
+Durant aquest estudi, el *software* que s'ha decidit fer servir és **R**, en concret s'ha emprat el paquet **DESeq2**, que ens permet fer un anàlisi complet de les dades, obtenint la seva significació biològica.
+
+## 3.3. Descripció pas a pas
+
+### 3.3.1. Obtenció pseudoaleatòria de les dades
+En primer lloc, s'ha procedit a l'extracció aleatòria de les dades. Tanmateix, no s'ha fet de manera totalment aleatòria, sinó que amb la fi de poder traballar sempre amb les mateixes dades i que aquestes no canviessin massa, s'ha fet un *set.seed()* (ficant com a número el meu NIF), de manera que les dades triades serien, en tot cas, *pseudoaleatòries*. 
+Primer he creat un nou *dataframe* per a cada grup, i dintre d'ell, amb *sample* triem 10 d'elles segons el *seed*, després unim els *dataframe* en un de nou, que anomeno *sampled_targets*. Amb aquest, faig un subset del document de *counts*. El codi emprat es pot veure a l'arxiu .Rmd.
+
+```{r echo = FALSE, message=FALSE, include = FALSE, cache= TRUE}
+#Obrim els fitxers targets i counts, que els he ficat en un zip, perquè pesava massa per Github, no sé com penjar arxius més grans
+targets <- read.csv(unz("targets.csv.zip", "targets.csv"))
+counts <- read.table(unz("counts.csv.zip", "counts.csv"), sep = ";", header = T, check.names = F)
+#Fiquem la seed i fem els subsets aleatoris mab RNGkind ens assegurem la reproducibilitat a l'informe
+RNGkind(sample.kind = "Rounding")
+set.seed(21701867)
+NIT <- subset(targets, targets$Group == "NIT")
+NIT_sampled <- NIT[sample(1:236, 10),]
+SFI <- subset(targets, targets$Group == "SFI")
+SFI_sampled <- SFI[sample(1:42, 10),]
+ELI <- subset(targets, targets$Group == "ELI")
+ELI_sampled <- ELI[sample(1:14, 10),]
+
+#juntem els subsets
+sampled_targets <- rbind(NIT_sampled, SFI_sampled, ELI_sampled)
+#Fem el subset en l'arxiu de counts
+sampled_counts <- counts[,sampled_targets$Sample_Name]
+rownames(sampled_counts) <- counts[,1]
+#Canviem el nom de les mostres, per uns més útils per l'anàlisi
+colnames(sampled_counts)[1:10] <- paste0("NIT", 1:10)
+colnames(sampled_counts)[11:20] <- paste0("SFI", 11:20)
+colnames(sampled_counts)[21:30] <- paste0("ELI", 21:30)
+
+#Amb aquesta ordre treiem el que hi ha després del punt del nom dels gens de ENSEMBL
+rownames(sampled_counts) <- gsub("\\..*", "",rownames(sampled_counts), fixed = FALSE)
+coldata <- sampled_targets[,c("Group", "Grupo_analisis")]
+```
+
+
+
+### 3.3.2. Preprocesament de les dades
+
+En aquest cas, com s'ha dit amb anterioritat, el paquet que s'emprarà durant el present estudi és el **DESeq2** per la seva facilitat d'utilització i la seva versatilitat. En primer cas, el que s'ha de fer és saber de quin tipus de dades partim, i les nostres són **dataMatrix** o matriu de dades, per la qual cosa, haurem d'utilitzar la funció *DESeqDataSetFromMatrix*, emprant un disseny experimental que depengui del grup de tractament (*Group*), el cual serà el *dds*.
+
+
+```{r echo = FALSE, include=FALSE, message=FALSE}
+library("DESeq2")
+dds <- DESeqDataSetFromMatrix(countData = sampled_counts,
+                              colData = coldata,
+                              design = ~ Group)
+#Els hem d'afegir el nom de les mostres
+featureData <- data.frame(gene = rownames(sampled_counts))
+mcols(dds) <- DataFrame(mcols(dds), featureData)
+mcols(dds)
+```
+
+Un cop tenim aquest objecte ben creat, hem de procedir al següent pas, que és el **prefiltratge**, en què eliminarem aquelles observacions que continguin un nombre de counts massa baix, perquè la variabilitat no tindría perquè deure's a variabilitat biològica. Un bon punt de tall serien aquelles observacions amb menys de 10 *counts*.
+
+```{r echo = FALSE, include=FALSE, message=FALSE}
+#Prefiltració
+keep <- rowSums(counts(dds)) >= 10
+#ens quedem només amn els que compleixin la condició posada
+dds <- dds[keep,]
+```
+
+El pas següent de cara a fer les comprovacions inicials és fer una normalització que després emprarem. Les dues més emprades solen ser la *VST* i la *rlog* les quals es pot veure a la Figura 1.
+```{r echo = FALSE, include = FALSE, message=FALSE}
+#Es pot dur a terme la transformació per VST
+vsd <- vst(dds, blind=FALSE)
+#i per rlog
+rld <- rlog(dds, blind=FALSE)
+library(dplyr)
+library(ggplot2)
+#afegim els factors al dds
+dds <- estimateSizeFactors(dds)
+#creem un nou dds1 que després emprarem
+dds1 <- dds
+#creem el gràfic per a poder comparar-lo amb la transformació amb el logaritme base 2
+df <- bind_rows(
+  as_data_frame(log2(counts(dds, normalized=TRUE)[, 1:2]+1)) %>%
+         mutate(transformation = "log2(x + 1)"),
+  as_tibble(assay(vsd)[, 1:2]) %>% mutate(transformation = "vst"),
+  as_tibble(assay(rld)[, 1:2]) %>% mutate(transformation = "rlog"))
+```
+Cadascun té els seus avantatges i inconvenients, com per exemple que la transfromació per *rlog* no va massa bé per grups grans de mostres (en tenim 30). 
+
+Ens quedarem amb la *VST* principalment per conveniència amb el nombre de mostres i el fet de ser una transfromació molt més ràpida.
+
+### 3.3.3. Identificació de gens diferencialment expressats
+
+Seguint amb l'objecte *dds* que hem obtingut del pas anterior, ja filtrat. Amb aquest el que fem és un **DESeq**, amb què obtindrem un Data Set amb el format *DESeq*. Obtenim els resultats i els fiquem en objectes diferents per a cada comparació.
+```{r, include=FALSE, message = FALSE}
+dds <- DESeq(dds)
+resS_E <- results(dds, name = "Group_SFI_vs_ELI", )
+resN_E <- results(dds, name = "Group_NIT_vs_ELI")
+#Per a poder fer la comparació amb NIT i SFI el que necessitem és ficar NIT com a primer nivell, així que el renivellem el dds1 que havíem creat idèntic i fem el DESeq i la comparació la guardem
+dds1$Group <- relevel(dds1$Group, "NIT")
+dds1 <- DESeq(dds1)
+resS_N <- results(dds1, name = "Group_SFI_vs_NIT")
+```
+També podem guardar els resultats, filtrant segons els paràmetres que ens convinguin, com per exemple, tots els que tinguin un *p-valor* inferior a 0.1. 
+```{r include=FALSE, message=FALSE}
+resSigS_E <- subset(resS_E, padj <0.1)
+resSigN_E <- subset(resN_E, padj <0.1)
+resSigS_N<- subset(resS_N, padj <0.1)
+```
+
+Un cop tinguts aquests resultats ja es podrien exportar, tanmateix, preferim esperar fins que els gens estiguin anotats, és a dir, que podem saber el nom dels gens a què fa referència.
+
+### 3.3.4. Anotació dels resultats 
+
+Amb la fi d'anotar els resultats i poder identificar quins són els gens diferencialment expressats que s'han obtingut (en els objectes *res*), emprarem el paquet **AnnotationDbi**. Com a base de dades de referència emprarem **org.Hs.eg.db**, que ens permet convertir els IDs dels gens procedents d'*Ensembl* a el que vulguem. Per conveniència hem triat fer el canvi als *símbols*, ja que és el nom pelque solen ser més reconeguts pels investigadors al seu camp. 
+```{r include = FALSE, message=FALSE}
+annotate_symbol <- function(res){
+  library(AnnotationDbi)
+  library(org.Hs.eg.db)
+  #En concret ho fem amb la funció mapIds camviant ENSEMBL per SYMBOL
+  res$symbol <- mapIds(org.Hs.eg.db,
+                     keys=row.names(res),
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+  return(res$symbol)
+}
+#Apliquem la funció que h
+resS_E$symbol <- annotate_symbol(resS_E)
+resN_E$symbol <- annotate_symbol(resN_E)
+resS_N$symbol <- annotate_symbol(resS_N)
+
+```
+
+### 3.3.5. Agrupació de les mostres
+
+Després de tenir les dades de l'anotació, podem dur a terme l'agrupació de les mostres, mitjançant divereses tècniques. Com pot ser creant una matriu de distàncies i veure com agrupen els diferents grups, com es pot comprovar a la secció de resultats, seguint sempre la normalització per VST, amb el paquet *pheatmap*.
+```{r include= FALSE, message=FALSE}
+#Fem la matriu de distàncies segons VST 
+sampleDists <- dist(t(assay(vsd)))
+library(pheatmap)
+library("RColorBrewer")
+#La convertim en matriu
+sampleDistMatrix <- as.matrix(sampleDists)
+#Fiquem el nom dels grups per a incloure'l
+rownames(sampleDistMatrix) <- vsd$Group
+colnames(sampleDistMatrix) <- NULL
+#Podem triar la paleta que vulguem
+colors <- colorRampPalette( rev(brewer.pal(9, "Greens")) )(255)
+```
+Una altra manera de veure les diferències seria la de fer un *heatmap* en què ens agrupa les mostres creant unes noves variables, les components, a partir de tots els gens; el qual podem fer amb la funció *plotPCA*. 
+
+```{r include=FALSE, message=FALSE}
+pcaData <- plotPCA(vsd, intgroup= "Group", returnData=TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+```
+
+Amb **genefilter**, a partir dels resultats de la normalització VST, també podem sel·leccionar, per exemple, els 20 més diferencialment expressats entre els tres grups, i veure com aquests es classifiquen.
+```{r include = FALSE, message=FALSE}
+library("genefilter")
+topVarGenes <- head(order(rowVars(assay(vsd)), decreasing = TRUE), 20)
+mat  <- assay(vsd)[topVarGenes, ]
+mat  <- mat - rowMeans(mat)
+anno <- as.data.frame(colData(vsd)[, c("Group","Grupo_analisis")])
+```
+D'altra banda, per a cada comparació feta també podem fer *plots MA*, però abans convertirem les dades originals dels *dds* per a pode visualitzar-los millor amb  el mètode *apeglm* [ref] per a poder eliminar possibles sorolls de fons que puguin interferir al gràfic.
+```{r include=FALSE, message=FALSE}
+library(apeglm)
+res_shrink_S_E <- lfcShrink(dds, coef = "Group_SFI_vs_ELI", type = "apeglm")
+res_shrink_N_E <- lfcShrink(dds, coef = "Group_NIT_vs_ELI", type = "apeglm")
+#Recordar que aquest l'hem de fer amb el dds1
+res_shrink_S_N <- lfcShrink(dds1, coef = "Group_SFI_vs_NIT", type = "apeglm")
+```
+
+D'altra banda, també farem un gràfic de Venn en què compari quins són significatius que canvien. Alternativament, exportarem els 100 més significatius de cada comparació com a *html* separat per a cada comparació amb el paquet *ReportingTools*.
+
+```{r include = FALSE, message= FALSE}
+library(ReportingTools)
+resOrderedS_E <- as.data.frame(resS_E[order(resS_E$pvalue),])[1:100,]
+htmlS_E <- HTMLReport(shortName = "SFI vs ELI", title = "Comparacio SFI-ELI")
+publish(resOrderedS_E, htmlS_E)
+url <- finish(htmlS_E)
+browseURL(url)
+resOrderedN_E <- as.data.frame(resN_E[order(resN_E$pvalue),])[1:100,]
+htmlN_E <- HTMLReport(shortName = "NIT vs ELI", title = "Comparacio NIT-ELI")
+publish(resOrderedN_E, htmlN_E)
+url <- finish(htmlN_E)
+browseURL(url)
+resOrderedS_N <- as.data.frame(resS_N[order(resS_N$pvalue),])[1:100,]
+htmlS_N <- HTMLReport(shortName = "SFI vs NIT", title = "Comparacio SFI-NIT")
+publish(resOrderedS_N, htmlS_N)
+url <- finish(htmlS_N)
+browseURL(url)
+```
+
+### 3.3.6. Anàlisi de significació biològica
+
+Un cop ja tenim els gens diferencialment expressats per a cada comparació, podem passar a fer un enriquiment dels processos més repetits. Aquest procediment el durem a terme amb el paquet **clusterProfiler** degut a la seva versatilitat, permetent-nos buscar patrons repetits segons diferents categories de la GO. Amb l'ajuda d'*enrichplot* farem els gràfics necessaris per a cada comparació.
+
+```{r, include = FALSE, message=FALSE}
+library(DOSE)
+#Creem una funció que ens permeti transformar en format ego, 
+ego_creator <- function(res){
+  geneList <- res$log2FoldChange
+  names(geneList) <- as.character(res$symbol)
+  geneList<- sort(geneList, decreasing = T)
+  library(clusterProfiler)
+  de <- names(geneList)[abs(geneList) > 1]
+  ego <- enrichGO(gene         = de,
+                OrgDb         = org.Hs.eg.db,
+                keyType       = 'SYMBOL',
+                ont           = "BP",
+                pAdjustMethod = "BH")
+  return(ego)
+}
+egoS_E <- ego_creator(resS_E)
+egoN_E <- ego_creator(resN_E)
+egoS_N <- ego_creator(resS_N)
+```
+
+# 4. Resultats
+
+## 4.1. Normalització i filtratge
+
+Primer de tot, passem a veure el resultat de les diferents transformacions possibles:
+```{r fig.cap= "Diferents transformacions efectuades a les mostres", message=FALSE, echo = FALSE, fig.align="center", fig.pos="H"}
+colnames(df)[1:2] <- c("x", "y")  
+
+ggplot(df, aes(x = x, y = y)) + geom_hex(bins = 80) +
+  coord_fixed() + facet_grid( . ~ transformation)
+```
+
+Podem comprovar com les dues (*rlog* i *vst*) són capaces d'arreglar la gran variabilitat que hi ha a les mostres amb contejos baixos. Però els contejos són reduïts clarament a la transformació VST, que és la que, com hem dit anteriorment, agafarem per a fer l'estudi.
+
+## 4.2. Agrupació de les mostres
+
+D'altra banda, un cop trobats els gens diferencials, podem veure com s'agrupen les mostres fent un anàlisi de components principals (o PCA):
+```{r echo = FALSE, message= TRUE, fig.cap= "Anàlisi de components principals per als tres grups d'estudi", fig.align="center", fig.pos="H"}
+ggplot(pcaData, aes(PC1, PC2, color=Group)) +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",percentVar[1],"% variància")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variància")) + 
+  coord_fixed() + theme_classic()
+
+```
+
+És aquí on podem comprovar ja que hiha una gran diferència segons que mirem. Les mostres pertanyent al grup no tractat *NIT* i les *SFI* no es poden separar i, no obstant això, sí que n'hi ha una separació separació entre aquestes dues i el grup *ELI*. Això seria un primer indici que el tractament d'ELI seria molt més efectiu.
+
+També podem fer d'altra banda comparacions amb *heatmaps* diferents:
+
+
+```{r echo = FALSE, message=FALSE, fig.cap= "Heatmap de les distàncies entre mostres segons la matriu de distàncies", fig.align="center", fig.pos="H", fig.height= 3.5, fig.width= 4.5}
+
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+```
+
+Aquest gràfic mostra amb claredat com hi ha una clara diferència visual d'agrupació entre el grup ELI (amb algun intrús del grup SFI) i la resta. Tanmateix, les altres dos grups (SFI i NIT) són incapaços de distingir-se entre sí.
+
+\pagebreak
+```{r echo = FALSE, message=FALSE, fig.cap= "Heatmap amb les transformacions VST, amb els 20 gens més significatius", fig.align="center", fig.pos="H", fig.height=4, fig.width=7}
+pheatmap(mat, annotation_col = anno, cluster_cols = T)
+```
+Semblant és el que passa amb aquest *heatmap*, la separació no és gaire clara amb els 20 gens més diferencials. Sí que sembla que hi ha patrons però que respondran a alguna altra variable.
+
+Per a cadascuna de les comparacions podem veure ara els *MA plot* per a veure com és la variació de l'expressió gènica als 3 casos.
+
+## 4.3. Descobriment de gens diferencials
+
+```{r echo = FALSE, message=FALSE, fig.cap="MA plots mostrant les diferències d'expressió gènica per a cadascuna de les 3 comparacions ", fig.align="center", fig.pos="H", fig.width= 8}
+par(mfrow = c(1,3))
+plotMA(res_shrink_S_E, ylim = c(-5,5), main = "Comparació SFI-ELI", xlab = "Mitjana dels counts normalitzats")
+
+plotMA(res_shrink_N_E, ylim = c(-5,5),main = "Comparació NIT-ELI", xlab = "Mitjana dels counts normalitzats")
+plotMA(res_shrink_S_N, ylim = c(-5,5),  main = "Comparació SFI-NIT", xlab = "Mitjana dels counts normalitzats")
+```
+
+És aquí on podem veure on está la diferència principal. Pel que fa a les comparacions SFI-ELI i NIT-ELI es veu com hi ha molts gens que es troben diferents, amb una clara inclinació cap a la sobreexpressió en les mostres ELI. Tanmateix el contrari passa amb la comparació SFI-NIT, en què molt pocs gens estan diferents, la qual cosa es pot explicar per la baixa separació que veiem als gràfics anteriors.
+
+Ho podem comprovar fent una comparació de comparacions amb un diagrama de Venn:
+
+```{r echo = FALSE, message=FALSE, fig.cap = "Diagrama de Venn representant els gens significatius (p-adj < 0.1) entre les tres comparacions", fig.align="center", fig.pos="H"}
+library(VennDiagram)
+#Fiquem amb el nom de ENSEMBL, perquè molts de la darrera no en tenen de Symbol, amés els significatius s'han fet abans d'anotar
+myCol <- brewer.pal(3, "Pastel2")
+#Programem el diagrama
+venn <- venn.diagram(
+  list(SFIvsELI = rownames(resSigS_E), NITvsELI = rownames(resSigN_E), SFIvsNIT = rownames(resSigS_N)),
+  NULL, 
+  lwd = 2,
+  lty = "blank",
+  fill = myCol,
+  cex = .6,
+  fontface = "bold",
+  fontfamily = "sans",
+  cat.cex = 0.6,
+  cat.fontface = "bold",
+  cat.default.pos = "outer"
+)
+grid.draw(venn)
+```
+
+Clarament els gens que canvien significativament en la comparació SFI-NIT són molt pocs, el que pot significar què el tractament per SFI no té efecte sobre els no tractats. Cosa corroborada en veure que en les comparacions amb el tractament amb ELI, hi ha un gran canvi tant amb el tractament amb SFI com els no tractats. 
+
+Per exemple, podem veure com és la taula de resultats, que s'ha obtingut per la comparació SFI-ELI:
+```{r echo = FALSE, message=FALSE}
+library(printr)
+head(resOrderedS_E, 5)
+```
+
+Amb gens com, TNR6C-aS1, LINC01480, DENND1C o RASGRP2 són els que surten més significatius per la comparació SFI-ELI.
+
+Amb la comparació NIT-ELI, és a dir, no tractats amb el tractats amb ELI, en tindríem els següents 5:
+
+```{r echo = FALSE, message=FALSE}
+library(printr)
+head(resOrderedN_E, 5)
+```
+
+El primer de tots no està descrit, però la resta sí, i a primera vista semblen als de la primera comparació.
+Podem mirar també la comparació SFI-NIT, en la qual veiem que els més significatius no estan ni tan sols anotats per la base de dades de org.Hs.eg.org. Cosa que es repeteix al llarg de la comparació.
+
+```{r echo = FALSE, message=FALSE}
+library(printr)
+head(resOrderedS_N, 5)
+```
+
+## 4.4. Anàlisi de significació biològica
+Una vegada fet un cop d'ull a alguns dels gens, el més important ara és veure en quines rutes pot estar implicats aquets gens que més varien. Ho farem amn un *enrichment analysis* dut a terme amb el paquet *clusterProfiler*. Podem veure els *dotplots* per a cadascuna de les comparacions, en ser molt útils perquè pots veure tantla significació com el nombre de gens que hi han alterats en un procés. 
+
+```{r echo = FALSE, message=FALSE, fig.cap= "Dotplots per la comparació SFI-ELI", fig.width=10,fig.align="center", fig.pos="H"}
+
+library(enrichplot)
+
+dotplot(egoS_E)
+```
+
+```{r echo = FALSE, message=FALSE, fig.cap= "Dotplots per la comparació NIT-ELI", fig.width=10,fig.align="center", fig.pos="H"}
+dotplot(egoN_E)
+```
+
+```{r echo = FALSE, message=FALSE, fig.cap= "Dotplots per la comparació SFI-NIT",fig.width=10, fig.align="center", fig.pos="H"}
+dotplot(egoS_N)
+```
+
+En aquest cas, veiem dues coses:
+
+- La comparació SFI-ELI i la NIT-ELI són molt similars i ambdues mosten un mateix tipus de gens alterats, els relacionats amb el sistema immune i l'activació de limfòcits, cosa que es perseguiex amb el tractament.
+
+- Pel que fa a la comparació SFI-NIT, veiem que els gens que s'alteren són molt diferents, gairebé tots relacionats amb la pell i no pas amb l'activació immunitària.
+
+Podem veure una xarxa d'igual manera que representi quins són els gens diferencials, la qual cosa ens pot resultar de molta utilitat per a trobar relacions entre gens compartits entre diversos procesos (en les primeres comparacions ometo el nom dels gens, perquè lmita la visibilitat)
+
+```{r echo = FALSE, message=FALSE, fig.cap= "Xarxa de gens per les comparació SFI-ELI", fig.align="center"}
+cnetplot(egoS_E, node_label = "category", fig.pos="H")
+```
+
+```{r echo = FALSE, message=FALSE, fig.cap= "Xarxa de gens per les comparació NIT-ELI", fig.align="center"}
+cnetplot(egoN_E, node_label = "category", fig.pos="H")
+```
+
+```{r echo = FALSE, message=FALSE, fig.cap= "Xarxa de gens per les comparació SFI-NIT", fig.align="center", fig.pos="H", fig.width=5, fig.height=5}
+cnetplot(egoS_N)
+```
+
+S'acaba de comprovar com els gens que s'activen quan es tracta emb SFI respecte al no tractat, no té res a veure amb els altres dos, que estan involucrats en resposta per limfòcits.
+
+# 5. Discusió
+
+S'ha dut a terme l'estudi con molt poques mostres (10), tenint en compte la poca capacitat de agrupació que es tenen amb aquestes, potser seria molt més recomanable agafar-ne més, ja que les teníem disponibles, però també es gastaria molta capacitat computacional.  D'altra banda, destacar la diferència de grandària tan enorme entre els diferents grups originals. Això fa que segons el seed que agafem les dades del grup no tractat puguin ser molt diferents les unes de les altres, mentre que al grup ELI, que només en són 14, les diferències seran mínimes. Aquesta tria pot afectar notablement a l'anàlisi. De fet, abans d'aconseguir que el seed fos el mateix per la consola i el RMarkdown, l'agrupació de mostres en cada cas era diferent, en algun cas he vist més separació entre els grups NIT-SFI i en d'altres no, tot i que ELI sempre resulta el més diferent. En tot cas, segons les que he obtingut, els resultats mostrarien que el tractament en forma de SFI no és eficaç (pel que fa a la resposta gènica) i que mitjançant l'ELI sí que hi hauria un canvi pertinent (tant amb les NIT com amb les SFI).
+
+# 6. Conclusió
+
+Sembla que hi ha diferències entre els grups NIT-ELI i SFI-ELI, però no així les que es podrien esperar entre SFI-NIT.
+
+# 7. Apèndix
+
+L'arxiu .Rmd executable que s'ha emprat per fer aquest informe es pot trobar a GitHub al repositori https://github.com/joaseki/PEC2_ADO 
+
+
+# 8. Referències
+
+- Love MI, Anders S, Huber W (2020). "Analyzing RNA-seq data with DESeq2". Disponible a: http://bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html
+
+- Love MI, Anders S, Kim V, Huber W (2015). “RNA-Seq workflow: gene-level exploratory analysis and differential expression.” F1000Research. doi: 10.12688/f1000research.7035.
+
+- Pagès H, Carlson M, Falcon S, Li N (2020). AnnotationDbi: Manipulation of SQLite-based annotations in Bioconductor. R package version 1.50.0.
+
+- Carlson M (2018). org.Hs.eg.db: Genome wide annotation for Human. R package version 3.7.0.
+
+- Zhu A, Ibrahim JG, Love MI. Heavy-tailed prior distributions for sequence count data: removing the noise and preserving large differences. Bioinformatics. 2019;35(12):2084‐2092. doi:10.1093/bioinformatics/bty895
+
+- Huntley MA, Larson JL, Chaivorapol C, Becker G, Lawrence M, Hackney JA, Kaminker JS (in press). “ReportingTools: an automated result processing and presentation toolkit for high throughput genomic analyses.” Bioinformatics. doi: 10.1093/bioinformatics/btt551.
+
+- Yu G, Wang L, Han Y, He Q (2012). “clusterProfiler: an R package for comparing biological themes among gene clusters.” OMICS: A Journal of Integrative Biology, 16(5), 284-287. doi: 10.1089/omi.2011.0118.
